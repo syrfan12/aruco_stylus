@@ -61,7 +61,7 @@ def estimatePoseGlobal(model_pts, img_pts, cameraMatrix, distCoeffs):
 
 def main():
     video_path = 'video/cam0_1080p30.mkv'
-    cap, fps = setup_video_file(video_path)
+    cap, fps = setup_video_file(0)
     cameraMatrix, distCoeffs = load_camera_calibration()
     detector, marker_size = setup_aruco()
 

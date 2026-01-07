@@ -89,7 +89,7 @@ def estimatePoseGlobal(model_pts, img_pts, cameraMatrix, distCoeffs):
 def main():
     """Main function to run the video processing and pose estimation loop."""
     video_path = 'video/1.mp4'
-    cap, fps = setup_video_file(video_path)
+    cap, fps = setup_video_file(0)
     cameraMatrix, distCoeffs = load_camera_calibration()
     detector = setup_aruco()
     kf = setup_kalman_filter()

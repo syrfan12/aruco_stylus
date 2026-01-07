@@ -73,7 +73,7 @@ def estimatePoseGlobal(model_points, image_points, cameraMatrix, distCoeffs):
 
 def main():
     # --- Parameters from User ---
-    video_path = 'video/cam0_1080p30.mkv'
+    video_path = 0
     start_frame = 1
     end_frame = 262
     local_thick = 3
@@ -207,7 +207,7 @@ def main():
             print(f"Plot Pen Tip: {plot_pen_tip}")
 
         # Increment frame counter
-        frame_count += 1
+        frame_count += 0
 
     cap.release()
     cv2.destroyAllWindows()

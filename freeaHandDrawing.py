@@ -82,6 +82,68 @@ def rotation_matrix_to_degrees(rvec):
     return np.degrees([x, y, z])
 
 
+def safe_int_tuple(point, debug_name=""):
+    """Safely convert a point to a pure Python int tuple."""
+    try:
+        result = []
+        # Handle numpy array or list input
+        if hasattr(point, '__iter__'):
+            for i, val in enumerate(point):
+                # First check for NaN and Inf
+                try:
+                    float_val = float(val)
+                    if np.isnan(float_val) or np.isinf(float_val):
+                        return None
+                    # Check for reasonable bounds (image is typically 640x480)
+                    if abs(float_val) > 10000:
+                        return None
+                except (ValueError, OverflowError):
+                    return None
+                
+                # Check if it's already a Python int
+                if isinstance(val, (int, np.integer)):
+                    result.append(int(val))
+                # Check if it's a numpy type with .item()
+                elif hasattr(val, 'item'):
+                    result.append(int(val.item()))
+                # Try direct conversion
+                else:
+                    result.append(int(float(val)))
+        else:
+            return None
+        
+        # Verify all elements are pure Python ints
+        pt = tuple(result)
+        for i, v in enumerate(pt):
+            if not isinstance(v, int) or isinstance(v, bool):
+                return None
+        
+        return pt
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+class PositionFilter:
+    """Exponential moving average filter for position smoothing."""
+    def __init__(self, alpha=0.3):
+        self.alpha = alpha  # Smoothing factor (0-1), higher = more responsive
+        self.filtered_pos = None
+    
+    def filter(self, new_pos):
+        """Apply exponential moving average filter."""
+        if self.filtered_pos is None:
+            self.filtered_pos = np.array(new_pos, dtype=float)
+            return self.filtered_pos
+        
+        new_pos_arr = np.array(new_pos, dtype=float)
+        self.filtered_pos = self.alpha * new_pos_arr + (1 - self.alpha) * self.filtered_pos
+        return self.filtered_pos
+    
+    def reset(self):
+        """Reset filter state."""
+        self.filtered_pos = None
+
+
 def main():
     """Main function to run the video processing and pose estimation loop."""
     video_path = 0
@@ -103,6 +165,12 @@ def main():
     pen_tip_path = deque(maxlen=1000)
     pose_data = []  # Store pose and pen tip data
     initial_origin = None  # Store the first origin position for normalization
+    
+    # --- Position Filters for Stability ---
+    origin_2d_filter = PositionFilter(alpha=0.4)  # Filter for 2D origin projection
+    pen_tip_2d_filter = PositionFilter(alpha=0.4)  # Filter for 2D pen tip projection
+    origin_3d_filter = PositionFilter(alpha=0.3)  # Filter for 3D origin
+    pen_tip_3d_filter = PositionFilter(alpha=0.3)  # Filter for 3D pen tip
 
     # --- Define Pen Tip Location ---
     pen_tip_loc_mm = np.array([[-0.02327], [-102.2512], [132.8306]])
@@ -124,6 +192,8 @@ def main():
     # --- Create a persistent canvas for drawing trajectories ---
     trajectory_canvas = np.zeros_like(last_frame)
     frame_count = 0
+    num_markers_detected = 0
+    sufficient_markers = False
 
     while True:
         if playing:
@@ -154,6 +224,10 @@ def main():
             aruco.drawDetectedMarkers(frame, corners, ids)
             image_points_collected = []
             model_points_collected = []
+            num_markers_detected = len(ids)  # Count markers
+            
+            # Only track pen tip if we have at least 2 markers (8 points: 4 per marker)
+            sufficient_markers = num_markers_detected >= 2
 
             for i, corner in enumerate(corners):
                 marker_id = ids[i][0]
@@ -181,38 +255,52 @@ def main():
                 origin_2d, _ = cv2.projectPoints(np.array([[0., 0., 0.]]), r_glob, t_glob, cameraMatrix, distCoeffs)
                 
                 # Validate origin_2d before converting to int
-                if not np.isnan(origin_2d).any():
-                    # Convert to pure Python int tuple
-                    origin_pt = (int(origin_2d[0][0][0]), int(origin_2d[0][0][1]))
-                    global_origin_pts.append(origin_pt)
-                    if len(global_origin_pts) > 1:
-                        cv2.line(trajectory_canvas, global_origin_pts[-2], global_origin_pts[-1], (0, 0, 255), 5)
+                if not np.isnan(origin_2d).any() and not np.isinf(origin_2d).any():
+                    # Apply smoothing filter to 2D origin
+                    filtered_origin_2d = origin_2d_filter.filter(origin_2d[0][0])
+                    origin_pt = safe_int_tuple(filtered_origin_2d)
+                    if origin_pt is not None:
+                        global_origin_pts.append(origin_pt)
+                        # if len(global_origin_pts) > 1:
+                        #     pt1 = safe_int_tuple(global_origin_pts[-2])
+                        #     pt2 = safe_int_tuple(global_origin_pts[-1])
+                        #     if pt1 is not None and pt2 is not None:
+                        #         cv2.line(trajectory_canvas, pt1, pt2, (0, 0, 255), 5)
 
-                    # If enabled, project the pen tip and trace its path
-                    if plot_pen_tip:
+                    # If enabled and we have enough markers, project the pen tip and trace its path
+                    if plot_pen_tip and sufficient_markers:
                         pen_tip_2d, _ = cv2.projectPoints(pen_tip_3d, r_glob, t_glob, cameraMatrix, distCoeffs)
                         
                         # Validate pen_tip_2d before converting to int
-                        if not np.isnan(pen_tip_2d).any():
-                            # Convert to pure Python int tuple
-                            pen_pt = (int(pen_tip_2d[0][0][0]), int(pen_tip_2d[0][0][1]))
-                            pen_tip_path.append(pen_pt)
-                            cv2.circle(frame, pen_pt, 5, (0, 255, 0), -1)
-                            if len(pen_tip_path) > 1:
-                                cv2.line(trajectory_canvas, pen_tip_path[-2], pen_tip_path[-1], (0, 255, 0), 5)
+                        if not np.isnan(pen_tip_2d).any() and not np.isinf(pen_tip_2d).any():
+                            # Apply smoothing filter to 2D pen tip
+                            filtered_pen_tip_2d = pen_tip_2d_filter.filter(pen_tip_2d[0][0])
+                            pen_pt = safe_int_tuple(filtered_pen_tip_2d)
+                            if pen_pt is not None:
+                                pen_tip_path.append(pen_pt)
+                                cv2.circle(frame, pen_pt, 5, (0, 255, 0), -1)
+                                if len(pen_tip_path) > 1:
+                                    pt1 = safe_int_tuple(pen_tip_path[-2])
+                                    pt2 = safe_int_tuple(pen_tip_path[-1])
+                                    if pt1 is not None and pt2 is not None:
+                                        cv2.line(trajectory_canvas, pt1, pt2, (0, 255, 0), 5)
                             
                             # Transform pen tip to 3D global coordinates
                             rotation_matrix, _ = cv2.Rodrigues(r_glob)
                             pen_tip_global_3d = rotation_matrix @ pen_tip_loc_mm + t_glob
                             
+                            # Apply smoothing filter to 3D pen tip
+                            filtered_pen_tip_3d = pen_tip_3d_filter.filter(pen_tip_global_3d)
+                            
                             # Validate 3D coordinates before storing
-                            if not (np.isnan(t_glob).any() or np.isnan(pen_tip_global_3d).any()):
+                            if not (np.isnan(t_glob).any() or np.isnan(filtered_pen_tip_3d).any() or 
+                                   np.isinf(t_glob).any() or np.isinf(filtered_pen_tip_3d).any()):
                                 # Store initial positions on first valid frame
                                 if initial_origin is None:
-                                    initial_origin = pen_tip_global_3d.copy()
+                                    initial_origin = filtered_pen_tip_3d.copy()
                                 
                                 # Calculate relative position (offset from pen tip first frame)
-                                pen_tip_relative = pen_tip_global_3d - initial_origin
+                                pen_tip_relative = filtered_pen_tip_3d - initial_origin
                                 origin_relative = t_glob - initial_origin
                                 
                                 # Store pose and pen tip data (relative to pen tip first frame)
@@ -240,12 +328,15 @@ def main():
 
         # --- UI Text Overlay ---
         # Draw this on top of the combined image so it's always visible
-        cv2.rectangle(display_frame, (0, 0), (350, 65), (0, 0, 0), -1)
-        cv2.putText(display_frame, 'Global Origin Trajectory: Red', (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
-                    (0, 0, 255), 2)
-        tip_color = (0, 255, 0) if plot_pen_tip else (128, 128, 128)
-        cv2.putText(display_frame, f"Pen Tip Trajectory: {'ON' if plot_pen_tip else 'OFF'} ('p' to toggle)", (10, 50),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, tip_color, 2)
+        cv2.rectangle(display_frame, (0, 0), (400, 80), (0, 0, 0), -1)
+        # cv2.putText(display_frame, 'Global Origin Trajectory: Red', (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+        #             (0, 0, 255), 2)
+        num_markers_text = f"Markers: {num_markers_detected if ids is not None else 0}"
+        cv2.putText(display_frame, num_markers_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        tip_color = (0, 255, 0) if (plot_pen_tip and sufficient_markers) else (128, 128, 128)
+        tip_status = "ON" if (plot_pen_tip and sufficient_markers) else ("OFF (need 2+ markers)" if not sufficient_markers else "OFF")
+        cv2.putText(display_frame, f"Pen Tip: {tip_status} ('p' toggle)", (10, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, tip_color, 1)
 
         # --- Display and Handle Keyboard Input ---
         cv2.imshow('Global Pose Estimation with Pen Tip', display_frame)
@@ -266,14 +357,21 @@ def main():
             # If turning off, clear the path and redraw the canvas without the green line
             if not plot_pen_tip:
                 pen_tip_path.clear()
+                pen_tip_2d_filter.reset()
                 # Redraw the canvas with only the red trajectory
                 trajectory_canvas[:] = 0
-                for i in range(1, len(global_origin_pts)):
-                    cv2.line(trajectory_canvas, global_origin_pts[i - 1], global_origin_pts[i], (0, 0, 255), 2)
+                # for i in range(1, len(global_origin_pts)):
+                #     try:
+                #         pt1 = safe_int_tuple(global_origin_pts[i - 1])
+                #         pt2 = safe_int_tuple(global_origin_pts[i])
+                #         if pt1 is not None and pt2 is not None:
+                #             cv2.line(trajectory_canvas, pt1, pt2, (0, 0, 255), 2)
+                #     except (ValueError, TypeError, IndexError):
+                #         pass
         elif key == ord('s'):  # Save data to CSV
             if pose_data:
                 df = pd.DataFrame(pose_data)
-                df.to_csv('pose_and_pen_tip_data.csv', index=False)
+                #df.to_csv('pose_and_pen_tip_data.csv', index=False)
                 print(f"Data saved to 'pose_and_pen_tip_data.csv' ({len(pose_data)} frames)")
             else:
                 print("No data to save yet.")

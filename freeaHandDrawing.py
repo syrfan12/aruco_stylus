@@ -6,6 +6,7 @@ from datetime import datetime
 import os
 import csv
 from PIL import ImageGrab
+import time
 
 # Camera Calibration
 CAMERA_MATRIX = np.array([
@@ -76,6 +77,69 @@ def detect_button(img_rgb, color_range):
         return 0
 
 
+def grab_button_region():
+    """Grab hanya region tombol, bukan full screen (jauh lebih cepat)."""
+    try:
+        # Dapatkan screen size
+        screen = ImageGrab.grab()
+        h, w = screen.size[1], screen.size[0]
+        # Grab hanya area bawah (bottom 150 pixels)
+        bbox = (0, h-150, w, h)
+        button_region = ImageGrab.grab(bbox=bbox)
+        return np.array(button_region)
+    except Exception as e:
+        # Fallback - return None jika gagal
+        return None
+
+
+class PerformanceMonitor:
+    """Monitor FPS dan timing dari setiap proses."""
+    def __init__(self, window_size=30):
+        self.window_size = window_size
+        self.frame_times = []
+        self.timings = {}
+        
+    def start_frame(self):
+        """Tandai awal frame."""
+        self.frame_start = time.time()
+        self.current_timings = {}
+    
+    def mark(self, label):
+        """Tandai waktu untuk operasi tertentu."""
+        self.current_timings[label] = time.time()
+    
+    def end_frame(self):
+        """Hitung timing untuk frame ini."""
+        frame_time = (time.time() - self.frame_start) * 1000  # ms
+        self.frame_times.append(frame_time)
+        if len(self.frame_times) > self.window_size:
+            self.frame_times.pop(0)
+        
+        # Calculate segment timings
+        if len(self.current_timings) > 0:
+            times = sorted(self.current_timings.items(), key=lambda x: x[1])
+            self.timings = {}
+            for i, (label, t) in enumerate(times):
+                if i == 0:
+                    self.timings[label] = t - self.frame_start
+                else:
+                    self.timings[label] = (t - times[i-1][1]) * 1000
+        
+        return frame_time
+    
+    def get_fps(self):
+        """Ambil FPS rata-rata."""
+        if not self.frame_times:
+            return 0
+        return 1000 / (sum(self.frame_times) / len(self.frame_times))
+    
+    def get_frame_time(self):
+        """Ambil frame time rata-rata dalam ms."""
+        if not self.frame_times:
+            return 0
+        return sum(self.frame_times) / len(self.frame_times)
+
+
 
 
 
@@ -113,11 +177,17 @@ def main():
     # Recording
     rec_dir = None
     rec_rows = []
+    rec_frames = []  # Buffer untuk menyimpan images
     rec_frame_count = 0
     initial_tip = None
     initial_marker = None
+    video_raw = None  # VideoWriter untuk raw camera
+    video_tracked = None  # VideoWriter untuk tracked/processed frame
     
     print("[START] Camera tracking initialized")
+    
+    # Initialize performance monitor
+    perf = PerformanceMonitor()
     
     # Read first frame
     ret, frame = cap.read()
@@ -128,12 +198,20 @@ def main():
     trajectory_canvas = np.zeros_like(frame)
     
     while True:
+        perf.start_frame()
+        
         ret, frame = cap.read()
+        perf.mark("read_frame")
         if not ret:
             break
         
+        # Save raw video frame jika recording
+        if recording and video_raw is not None:
+            video_raw.write(frame)
+        
         # Detect markers
         corners, ids, _ = detector.detectMarkers(frame)
+        perf.mark("detect_markers")
         num_markers = len(ids) if ids is not None else 0
         
         if num_markers >= 2 and ids is not None:
@@ -149,6 +227,7 @@ def main():
             
             # Estimate pose
             rvec, tvec = estimate_pose(model_pts, img_pts)
+            perf.mark("estimate_pose")
             
             if rvec is not None and tvec is not None and not (np.isnan(rvec).any() or np.isnan(tvec).any()):
                 cv2.drawFrameAxes(frame, CAMERA_MATRIX, DIST_COEFFS, rvec, tvec, 30, 4)
@@ -208,19 +287,23 @@ def main():
                         *axis
                     ])
                     
-                    # Save image
-                    try:
-                        screen = np.array(ImageGrab.grab())
-                        screen_gray = cv2.cvtColor(screen, cv2.COLOR_RGB2GRAY)
-                        crop = CROP_COORDS[CROP_INDEX]
-                        screen_crop = screen_gray[crop[1]:crop[3], crop[0]:crop[2]]
-                        os.makedirs(f"{rec_dir}/images", exist_ok=True)
-                        cv2.imwrite(f"{rec_dir}/images/frame_{rec_frame_count:06d}.png", screen_crop)
-                    except:
-                        pass
+                    # Buffer image untuk disimpan nanti
+                    # Hanya capture jika frame tertentu (reduce frequency)
+                    if rec_frame_count % 2 == 1:  # Capture setiap frame ganjil (50% reduction)
+                        try:
+                            screen = np.array(ImageGrab.grab())
+                            perf.mark("grab_screen")
+                            screen_gray = cv2.cvtColor(screen, cv2.COLOR_RGB2GRAY)
+                            crop = CROP_COORDS[CROP_INDEX]
+                            screen_crop = screen_gray[crop[1]:crop[3], crop[0]:crop[2]]
+                            rec_frames.append((rec_frame_count, screen_crop))
+                            perf.mark("buffer_frame")
+                        except:
+                            pass
         
         # Combine trajectory with frame
         gray = cv2.cvtColor(trajectory_canvas, cv2.COLOR_BGR2GRAY)
+        perf.mark("trajectory_combine")
         _, mask = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
         mask_inv = cv2.bitwise_not(mask)
         frame = cv2.bitwise_and(frame, frame, mask=mask_inv)
@@ -235,31 +318,90 @@ def main():
         cv2.putText(frame, "● REC" if recording else "○ REC", (10, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.8, rec_color, 2)
         cv2.putText(frame, f"Frames: {rec_frame_count}", (10, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
         
-        # Button detection
-        if frame_count % 2 == 0:
+        # Debug info - FPS dan timing
+        fps = perf.get_fps()
+        frame_ms = perf.get_frame_time()
+        
+        debug_y = 25
+        cv2.rectangle(frame, (frame.shape[1]-350, 0), (frame.shape[1], debug_y+100), (0, 0, 0), -1)
+        cv2.putText(frame, f"FPS: {fps:.1f} ({frame_ms:.1f}ms)", (frame.shape[1]-340, debug_y), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0) if fps > 20 else (0, 165, 255), 1)
+        
+        debug_y += 20
+        if recording:
+            grab_time = (perf.current_timings.get('grab_screen', 0) - perf.frame_start) * 1000 if 'grab_screen' in perf.current_timings else 0
+            buffer_time = (perf.current_timings.get('buffer_frame', 0) - perf.current_timings.get('grab_screen', perf.frame_start)) * 1000 if 'buffer_frame' in perf.current_timings else 0
+            cv2.putText(frame, f"REC: Grab={grab_time:.1f}ms", 
+                       (frame.shape[1]-340, debug_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+            debug_y += 15
+            cv2.putText(frame, f"     Buffer={buffer_time:.1f}ms", 
+                       (frame.shape[1]-340, debug_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+            debug_y += 15
+            cv2.putText(frame, f"     Imgs: {len(rec_frames)}", 
+                       (frame.shape[1]-340, debug_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+        else:
+            cv2.putText(frame, "Detect: OK", (frame.shape[1]-340, debug_y), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 255, 100), 1)
+        
+        perf.mark("ui_render")
+        
+        # Button detection - reduce frequency dari setiap frame menjadi setiap 5 frame
+        if frame_count % 5 == 0:
             try:
-                screen = np.array(ImageGrab.grab())
-                btn_on = detect_button(screen, BUTTON_ON_COLOR)
-                btn_off = detect_button(screen, BUTTON_OFF_COLOR)
+                screen = grab_button_region()
+                perf.mark("button_grab")
+                if screen is not None:
+                    btn_on = detect_button(screen, BUTTON_ON_COLOR)
+                    btn_off = detect_button(screen, BUTTON_OFF_COLOR)
+                    perf.mark("button_detect")
+                else:
+                    btn_on = btn_off = 0
                 
                 if btn_on > BUTTON_THRESHOLD and button_state != 'ON':
                     recording = True
                     button_state = 'ON'
                     rec_dir = f"dataMarker/session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                    rec_rows, rec_frame_count, initial_tip, initial_marker = [], 0, None, None
+                    os.makedirs(rec_dir, exist_ok=True)
+                    
+                    # Setup video writers
+                    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                    fps_video = 30  # Target FPS untuk video
+                    frame_size = (frame.shape[1], frame.shape[0])
+                    video_raw = cv2.VideoWriter(f"{rec_dir}/raw_camera.mp4", fourcc, fps_video, frame_size)
+                    video_tracked = cv2.VideoWriter(f"{rec_dir}/tracked.mp4", fourcc, fps_video, frame_size)
+                    
+                    rec_rows, rec_frames, rec_frame_count, initial_tip, initial_marker = [], [], 0, None, None
                     print("[REC] Started")
                 
                 elif btn_off > BUTTON_THRESHOLD and button_state != 'OFF':
                     if recording:
+                        # Release video writers
+                        if video_raw is not None:
+                            video_raw.release()
+                            video_raw = None
+                        if video_tracked is not None:
+                            video_tracked.release()
+                            video_tracked = None
+                        
                         os.makedirs(rec_dir, exist_ok=True)
+                        # Save CSV
                         csv_file = f"{rec_dir}/data.csv"
                         with open(csv_file, 'w', newline='') as f:
                             writer = csv.writer(f)
                             writer.writerow(['timestamp', 'frame', 'marker_id', 'tip_x', 'tip_y', 'tip_z', 'marker_x', 'marker_y', 'marker_z', 'angle', 'axis_x', 'axis_y', 'axis_z'])
                             writer.writerows(rec_rows)
-                        print(f"[SAVED] {csv_file}")
+                        print(f"[SAVED] {csv_file} ({len(rec_rows)} frames)")
+                        print(f"[SAVED] raw_camera.mp4 & tracked.mp4 (video files)")
+                        # Save all images from buffer
+                        if rec_frames:
+                            img_dir = f"{rec_dir}/images"
+                            os.makedirs(img_dir, exist_ok=True)
+                            for frame_idx, frame_img in rec_frames:
+                                cv2.imwrite(f"{img_dir}/frame_{frame_idx:06d}.png", frame_img)
+                            print(f"[SAVED] {len(rec_frames)} images to {img_dir}")
                     recording = False
                     button_state = 'OFF'
+                    rec_rows, rec_frames = [], []  # Clear buffers
                     pen_tip_3d_filter = None
             except:
                 pass
@@ -268,16 +410,42 @@ def main():
         if cv2.waitKey(1) & 0xFF == 27:
             break
         
+        # Save tracked video frame jika recording
+        if recording and video_tracked is not None:
+            video_tracked.write(frame)
+        
+        frame_time = perf.end_frame()
+        
+        # Log performance setiap 30 frame
+        if frame_count % 30 == 0 and frame_count > 0:
+            fps = perf.get_fps()
+            status = "REC" if recording else "IDLE"
+            print(f"[PERF] Frame {frame_count} | {status} | FPS: {fps:.1f} | FrameTime: {frame_time:.1f}ms")
+        
         frame_count += 1
     
-    # Cleanup
-    if recording:
+    # Cleanup - save jika masih recording
+    if recording and rec_rows:
+        # Release video writers
+        if video_raw is not None:
+            video_raw.release()
+        if video_tracked is not None:
+            video_tracked.release()
+        
         os.makedirs(rec_dir, exist_ok=True)
         csv_file = f"{rec_dir}/data.csv"
         with open(csv_file, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(['timestamp', 'frame', 'marker_id', 'tip_x', 'tip_y', 'tip_z', 'marker_x', 'marker_y', 'marker_z', 'angle', 'axis_x', 'axis_y', 'axis_z'])
             writer.writerows(rec_rows)
+        print(f"[SAVED] {csv_file} ({len(rec_rows)} frames)")
+        print(f"[SAVED] raw_camera.mp4 & tracked.mp4 (video files)")
+        if rec_frames:
+            img_dir = f"{rec_dir}/images"
+            os.makedirs(img_dir, exist_ok=True)
+            for frame_idx, frame_img in rec_frames:
+                cv2.imwrite(f"{img_dir}/frame_{frame_idx:06d}.png", frame_img)
+            print(f"[SAVED] {len(rec_frames)} images to {img_dir}")
     
     cap.release()
     cv2.destroyAllWindows()

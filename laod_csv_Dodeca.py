@@ -61,6 +61,23 @@ def print_sample_data(data):
     print(f"Total frames loaded: {len(data['frame'])}")
     print("=" * 60)
 
+import matplotlib.pyplot as plt
+
+def plot_from_data_dict(data, every=1):
+    x = data["pen_tip_x_mm"].to_numpy()[::every]
+    y = data["pen_tip_y_mm"].to_numpy()[::every]
+    z = data["pen_tip_z_mm"].to_numpy()[::every]
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+    ax.plot(x, y, z, linewidth=1)
+    ax.set_xlabel("X (mm)")
+    ax.set_ylabel("Y (mm)")
+    ax.set_zlabel("Z (mm)")
+    ax.set_title("Pen Tip 3D Trajectory (from dict)")
+    ax.set_box_aspect([1, 1, 1])
+    plt.show()
+
 
 if __name__ == '__main__':
     # Load the CSV file
@@ -79,3 +96,5 @@ if __name__ == '__main__':
     except FileNotFoundError:
         print(f"Error: File '{csv_file}' not found.")
         print("Make sure to run freeaHandDrawing.py and save the data first (press 's' or exit).")
+    
+    

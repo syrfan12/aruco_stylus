@@ -294,9 +294,13 @@ def main():
                             screen = np.array(ImageGrab.grab())
                             perf.mark("grab_screen")
                             screen_gray = cv2.cvtColor(screen, cv2.COLOR_RGB2GRAY)
+
                             crop = CROP_COORDS[CROP_INDEX]
                             screen_crop = screen_gray[crop[1]:crop[3], crop[0]:crop[2]]
-                            rec_frames.append((rec_frame_count, screen_crop))
+                            img_processed = screen_crop.astype(np.float32) + 20
+                            img_processed[img_processed > 255] = 255
+                            img_processed = img_processed.astype(np.uint8)
+                            rec_frames.append((rec_frame_count, img_processed))
                             perf.mark("buffer_frame")
                         except:
                             pass

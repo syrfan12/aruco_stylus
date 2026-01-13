@@ -334,16 +334,18 @@ def main():
                 else:
                     pen_tip_2d_filter = apply_filter(pen_tip_2d_filter, pen_tip_2d[0][0], 0.4)
                 
-                pen_pt = safe_point(pen_tip_2d_filter)
-                if pen_pt:
-                    pen_tip_path.append(pen_pt)
-                    if len(pen_tip_path) > 1000:
-                        pen_tip_path.pop(0)
-                    cv2.circle(frame, pen_pt, 5, (0, 255, 0), -1)
-                    if len(pen_tip_path) > 1:
-                        pt1, pt2 = pen_tip_path[-2], pen_tip_path[-1]
-                        if pt1 and pt2:
-                            cv2.line(trajectory_canvas, pt1, pt2, (0, 255, 0), 5)
+                # Only track pen tip when recording
+                if recording:
+                    pen_pt = safe_point(pen_tip_2d_filter)
+                    if pen_pt:
+                        pen_tip_path.append(pen_pt)
+                        if len(pen_tip_path) > 1000:
+                            pen_tip_path.pop(0)
+                        cv2.circle(frame, pen_pt, 5, (0, 255, 0), -1)
+                        if len(pen_tip_path) > 1:
+                            pt1, pt2 = pen_tip_path[-2], pen_tip_path[-1]
+                            if pt1 and pt2:
+                                cv2.line(trajectory_canvas, pt1, pt2, (0, 255, 0), 5)
                 
                 # 3D pen tip
                 rot_mat, _ = cv2.Rodrigues(rvec)
@@ -444,6 +446,7 @@ def main():
                     video_tracked = cv2.VideoWriter(f"{rec_dir}/tracked.mp4", fourcc, fps_video, frame_size)
                     
                     rec_rows, rec_frames, rec_frame_count, initial_tip, initial_marker = [], [], 0, None, None
+                    trajectory_canvas = np.zeros_like(frame)  # Clear visualization
                     print("[REC] Started")
                 
                 elif btn_off > BUTTON_THRESHOLD and button_state != 'OFF':
@@ -475,6 +478,7 @@ def main():
                     recording = False
                     button_state = 'OFF'
                     rec_rows, rec_frames = [], []  # Clear buffers
+                    pen_tip_path = []  # Clear trajectory
                     pen_tip_3d_filter = None
             except:
                 pass
@@ -519,6 +523,7 @@ def main():
             for frame_idx, frame_img in rec_frames:
                 cv2.imwrite(f"{img_dir}/frame_{frame_idx:06d}.png", frame_img)
             print(f"[SAVED] {len(rec_frames)} images to {img_dir}")
+        pen_tip_path = []  # Clear trajectory after saving
     
     cap.release()
     cv2.destroyAllWindows()

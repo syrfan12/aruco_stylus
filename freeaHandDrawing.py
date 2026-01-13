@@ -140,6 +140,90 @@ class PerformanceMonitor:
         return sum(self.frame_times) / len(self.frame_times)
 
 
+class UIDisplay:
+    """Helper untuk menampilkan UI dengan layout terstruktur."""
+    
+    def __init__(self, frame):
+        self.frame = frame
+        self.h, self.w = frame.shape[:2]
+        self.font = cv2.FONT_HERSHEY_SIMPLEX
+        self.font_size = 0.5
+        self.font_thickness = 1
+        self.line_height = 20
+        self.text_color = (255, 255, 255)
+        self.bg_color = (0, 0, 0)
+        self.bg_alpha = 0.7
+    
+    def draw_text_with_bg(self, x, y, text, color=None, bg_color=None):
+        """Draw text dengan background semi-transparent."""
+        if color is None:
+            color = self.text_color
+        if bg_color is None:
+            bg_color = self.bg_color
+        
+        # Get text size
+        (text_w, text_h), baseline = cv2.getTextSize(text, self.font, self.font_size, self.font_thickness)
+        
+        # Draw semi-transparent background
+        overlay = self.frame.copy()
+        cv2.rectangle(overlay, (x - 5, y - text_h - 5), (x + text_w + 5, y + baseline + 5), bg_color, -1)
+        cv2.addWeighted(overlay, self.bg_alpha, self.frame, 1 - self.bg_alpha, 0, self.frame)
+        
+        # Draw text
+        cv2.putText(self.frame, text, (x, y), self.font, self.font_size, color, self.font_thickness)
+    
+    def draw_panel(self, title, items, x, y, color=(0, 200, 0)):
+        """Draw panel dengan title dan list items."""
+        # Draw panel background
+        panel_h = len(items) * self.line_height + 40
+        overlay = self.frame.copy()
+        cv2.rectangle(overlay, (x, y), (x + 300, y + panel_h), self.bg_color, -1)
+        cv2.addWeighted(overlay, self.bg_alpha, self.frame, 1 - self.bg_alpha, 0, self.frame)
+        
+        # Draw border
+        cv2.rectangle(self.frame, (x, y), (x + 300, y + panel_h), color, 2)
+        
+        # Draw title
+        cv2.putText(self.frame, title, (x + 10, y + 25), self.font, self.font_size + 0.1, color, 2)
+        
+        # Draw items
+        for i, item in enumerate(items):
+            item_y = y + 45 + i * self.line_height
+            cv2.putText(self.frame, item, (x + 15, item_y), self.font, self.font_size - 0.1, self.text_color, 1)
+        
+        return y + panel_h + 10
+    
+    def draw_status_panel(self, num_markers, recording, rec_frame_count):
+        """Draw status panel di kiri atas."""
+        items = [
+            f"Markers: {num_markers}",
+            f"Pen Tip: {'ON' if num_markers >= 2 else 'OFF'}",
+            f"REC: {'●' if recording else '○'} {rec_frame_count} frames" if recording else f"REC: ○ Idle"
+        ]
+        return self.draw_panel("STATUS", items, 10, 10, (0, 200, 100))
+    
+    def draw_performance_panel(self, fps, frame_ms):
+        """Draw performance panel di kanan atas."""
+        fps_color = (0, 255, 0) if fps > 20 else (0, 165, 255)
+        items = [
+            f"FPS: {fps:.1f}",
+            f"Frame: {frame_ms:.1f}ms"
+        ]
+        return self.draw_panel("PERFORMANCE", items, self.w - 310, 10, fps_color)
+    
+    def draw_recording_panel(self, perf):
+        """Draw recording details panel."""
+        grab_time = (perf.current_timings.get('grab_screen', perf.frame_start) - perf.frame_start) * 1000 if 'grab_screen' in perf.current_timings else 0
+        buffer_time = (perf.current_timings.get('buffer_frame', perf.frame_start) - perf.current_timings.get('grab_screen', perf.frame_start)) * 1000 if 'buffer_frame' in perf.current_timings else 0
+        
+        items = [
+            f"Grab: {grab_time:.1f}ms",
+            f"Buffer: {buffer_time:.1f}ms",
+            f"Images: {len(perf.current_timings)} captured"
+        ]
+        return self.draw_panel("RECORDING STATS", items, self.w - 310, 120, (0, 165, 255))
+
+
 
 
 
@@ -184,6 +268,9 @@ def main():
     video_raw = None  # VideoWriter untuk raw camera
     video_tracked = None  # VideoWriter untuk tracked/processed frame
     
+    # UI Display
+    ui = None
+    
     print("[START] Camera tracking initialized")
     
     # Initialize performance monitor
@@ -196,6 +283,7 @@ def main():
         return
     
     trajectory_canvas = np.zeros_like(frame)
+    ui = UIDisplay(frame)
     
     while True:
         perf.start_frame()
@@ -313,39 +401,20 @@ def main():
         frame = cv2.bitwise_and(frame, frame, mask=mask_inv)
         frame = cv2.add(frame, cv2.bitwise_and(trajectory_canvas, trajectory_canvas, mask=mask))
         
-        # UI
-        cv2.rectangle(frame, (0, 0), (450, 130), (0, 0, 0), -1)
-        cv2.putText(frame, f"Markers: {num_markers}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        tip_status = "ON" if num_markers >= 2 else f"OFF ({2-num_markers} needed)"
-        cv2.putText(frame, f"Pen Tip: {tip_status}", (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if num_markers >= 2 else (128, 128, 128), 1)
-        rec_color = (0, 255, 255) if recording else (200, 200, 200)
-        cv2.putText(frame, "● REC" if recording else "○ REC", (10, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.8, rec_color, 2)
-        cv2.putText(frame, f"Frames: {rec_frame_count}", (10, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        # Initialize UI Display untuk frame ini
+        ui = UIDisplay(frame)
         
-        # Debug info - FPS dan timing
+        # Draw Status Panel (kiri atas)
+        ui.draw_status_panel(num_markers, recording, rec_frame_count)
+        
+        # Draw Performance Panel (kanan atas)
         fps = perf.get_fps()
         frame_ms = perf.get_frame_time()
+        ui.draw_performance_panel(fps, frame_ms)
         
-        debug_y = 25
-        cv2.rectangle(frame, (frame.shape[1]-350, 0), (frame.shape[1], debug_y+100), (0, 0, 0), -1)
-        cv2.putText(frame, f"FPS: {fps:.1f} ({frame_ms:.1f}ms)", (frame.shape[1]-340, debug_y), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0) if fps > 20 else (0, 165, 255), 1)
-        
-        debug_y += 20
+        # Draw Recording Panel jika sedang recording (kanan bawah)
         if recording:
-            grab_time = (perf.current_timings.get('grab_screen', 0) - perf.frame_start) * 1000 if 'grab_screen' in perf.current_timings else 0
-            buffer_time = (perf.current_timings.get('buffer_frame', 0) - perf.current_timings.get('grab_screen', perf.frame_start)) * 1000 if 'buffer_frame' in perf.current_timings else 0
-            cv2.putText(frame, f"REC: Grab={grab_time:.1f}ms", 
-                       (frame.shape[1]-340, debug_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-            debug_y += 15
-            cv2.putText(frame, f"     Buffer={buffer_time:.1f}ms", 
-                       (frame.shape[1]-340, debug_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-            debug_y += 15
-            cv2.putText(frame, f"     Imgs: {len(rec_frames)}", 
-                       (frame.shape[1]-340, debug_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-        else:
-            cv2.putText(frame, "Detect: OK", (frame.shape[1]-340, debug_y), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 255, 100), 1)
+            ui.draw_recording_panel(perf)
         
         perf.mark("ui_render")
         

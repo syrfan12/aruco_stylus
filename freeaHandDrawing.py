@@ -23,7 +23,8 @@ DIST_COEFFS = np.array([
     [0.2851862067489753]
 ], dtype=np.float32)
 
-PEN_TIP_LOC = np.array([[-0.02327], [-102.2512], [132.8306]], dtype=np.float32)  # mm
+#PEN_TIP_LOC = np.array([[0.02327], [-102.2512], [190]], dtype=np.float32)  # mm
+PEN_TIP_LOC = np.array([[-5.8151941806526235], [-117.69125023287766], [142.09479755195974]], dtype=np.float32)
 BUTTON_ON_COLOR = ([80, 150, 90], [120, 200, 120])  # HSV range
 BUTTON_OFF_COLOR = ([20, 200, 200], [40, 255, 255])  # HSV range
 BUTTON_THRESHOLD = 1000

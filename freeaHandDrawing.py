@@ -285,11 +285,24 @@ def main():
     
     trajectory_canvas = np.zeros_like(frame)
     ui = UIDisplay(frame)
+    prm = detector.getDetectorParameters()
     
     while True:
         perf.start_frame()
         
         ret, frame = cap.read()
+
+        # gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        # thresh_frame = cv2.adaptiveThreshold(
+        #     gray, 
+        #     255, 
+        #     cv2.ADAPTIVE_THRESH_MEAN_C, 
+        #     cv2.THRESH_BINARY_INV, # ArUco sering membalik warna untuk mencari kontur
+        #     prm.adaptiveThreshWinSizeMin, 
+        #     prm.adaptiveThreshConstant
+        # )
+        # cv2.imshow("ArUco-Style Thresholding", thresh_frame)
+        
         perf.mark("read_frame")
         if not ret:
             break
@@ -304,6 +317,13 @@ def main():
         num_markers = len(ids) if ids is not None else 0
         
         if num_markers >= 2 and ids is not None:
+            my_id = [1, 5, 7]
+            mask_id = np.isin(ids, my_id)
+            indices_id = np.where(mask_id)[0]
+            corners_mask = [corners[i] for i in indices_id]
+            corners = corners_mask
+            ids = ids[indices_id]
+
             aruco.drawDetectedMarkers(frame, corners, ids)
             
             # Collect points
@@ -380,7 +400,7 @@ def main():
                     
                     # Buffer image untuk disimpan nanti
                     # Hanya capture jika frame tertentu (reduce frequency)
-                    if rec_frame_count % 2 == 1:  # Capture setiap frame ganjil (50% reduction)
+                    if True:  # Capture setiap frame ganjil (50% reduction)
                         try:
                             screen = np.array(ImageGrab.grab())
                             perf.mark("grab_screen")
@@ -438,16 +458,25 @@ def main():
                     button_state = 'ON'
                     rec_dir = f"dataMarker/session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                     os.makedirs(rec_dir, exist_ok=True)
-                    
+
                     # Setup video writers
                     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                     fps_video = 30  # Target FPS untuk video
                     frame_size = (frame.shape[1], frame.shape[0])
                     video_raw = cv2.VideoWriter(f"{rec_dir}/raw_camera.mp4", fourcc, fps_video, frame_size)
                     video_tracked = cv2.VideoWriter(f"{rec_dir}/tracked.mp4", fourcc, fps_video, frame_size)
-                    
-                    rec_rows, rec_frames, rec_frame_count, initial_tip, initial_marker = [], [], 0, None, None
+
+                    # Reset semua buffer dan state
+                    rec_rows = []
+                    rec_frames = []
+                    rec_frame_count = 0
+                    initial_tip = None
+                    initial_marker = None
                     trajectory_canvas = np.zeros_like(frame)  # Clear visualization
+                    pen_tip_path = []
+                    pen_tip_3d_filter = None
+                    pen_tip_2d_filter = None
+                    origin_2d_filter = None
                     print("[REC] Started")
                 
                 elif btn_off > BUTTON_THRESHOLD and button_state != 'OFF':

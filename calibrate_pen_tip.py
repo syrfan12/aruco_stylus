@@ -42,6 +42,8 @@ def main():
     model_pts_by_id = [model_pts[i:i+4] for i in range(0,len(model_pts),4)]
 
     cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     detector = setup_aruco()
 
     cv2.namedWindow("Dodeca Pen Calib")
@@ -53,6 +55,11 @@ def main():
 
     while True:
         ret, frame = cap.read()
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        #print(f"[VIDEO] {width}x{height} @ {fps:.2f} FPS | Total frames: {total_frames}")
         if not ret:
             break
 

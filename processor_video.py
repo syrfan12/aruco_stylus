@@ -30,7 +30,7 @@ DIST_COEFFS = np.array([
     [0.2851862067489753]
 ], dtype=np.float32)
 
-PEN_TIP_LOC = np.array([[-5.8151941806526235], [-117.69125023287766], [142.09479755195974]], dtype=np.float32)
+PEN_TIP_LOC = np.array([[5.210180842491079], [-121.40040855432804], [153.18664070080274]], dtype=np.float32)
 
 
 def setup_aruco():
@@ -282,7 +282,7 @@ def main():
     
     if args.all:
         # Process all sessions
-        base_dir = 'dataMarker'
+        base_dir = 'dataMarker/for_calib'
         if not os.path.exists(base_dir):
             print("Error: dataMarker directory not found")
             return

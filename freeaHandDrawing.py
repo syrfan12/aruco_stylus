@@ -292,16 +292,16 @@ def main():
         
         ret, frame = cap.read()
 
-        # gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        # thresh_frame = cv2.adaptiveThreshold(
-        #     gray, 
-        #     255, 
-        #     cv2.ADAPTIVE_THRESH_MEAN_C, 
-        #     cv2.THRESH_BINARY_INV, # ArUco sering membalik warna untuk mencari kontur
-        #     prm.adaptiveThreshWinSizeMin, 
-        #     prm.adaptiveThreshConstant
-        # )
-        # cv2.imshow("ArUco-Style Thresholding", thresh_frame)
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        thresh_frame = cv2.adaptiveThreshold(
+            gray, 
+            255, 
+            cv2.ADAPTIVE_THRESH_MEAN_C, 
+            cv2.THRESH_BINARY_INV, # ArUco sering membalik warna untuk mencari kontur
+            prm.adaptiveThreshWinSizeMin, 
+            prm.adaptiveThreshConstant
+        )
+        cv2.imshow("ArUco-Style Thresholding", thresh_frame)
         
         perf.mark("read_frame")
         if not ret:

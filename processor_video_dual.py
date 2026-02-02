@@ -32,11 +32,16 @@ DIST_COEFFS = np.array([
 ], dtype=np.float32)
 
 # Dodecahedron pen tip offset (mm)
-DODECA_PEN_TIP_LOC = np.array([[5.210180842491079], [-121.40040855432804], [153.18664070080274]], dtype=np.float32)
+DODECA_PEN_TIP_LOC = np.array([[3.950217091], [-122.019756294], [143.423864236]], dtype=np.float32)
 
 # Single marker pen tip offset (meter)
-SINGLE_TIP_OFFSET_MARKER = np.array([[55], [0], [-210]], dtype=np.float32)  # -200mm = -0.2m
-SINGLE_MARKER_SIZE = 0.017  # meter
+#SINGLE_TIP_OFFSET_MARKER = np.array([[-45.352322], [0], [-137.492666]], dtype=np.float32) # id 22
+#SINGLE_TIP_OFFSET_MARKER = np.array([[-79.004558], [50.944913], [-163.322381]], dtype=np.float32) # id 10
+#SINGLE_TIP_OFFSET_MARKER = np.array([[2.610715], [-55.398142], [-156.996888]], dtype=np.float32) # id 15
+SINGLE_TIP_OFFSET_MARKER = np.array([[ 0], [0], [ -180]], dtype=np.float32)
+# Single marker setup
+MARKER_ID_TARGET = 15
+SINGLE_MARKER_SIZE_MM = 0.016 * 1000
 
 
 def setup_aruco():
@@ -51,45 +56,23 @@ def estimate_pose_dodeca(model_pts, img_pts):
     if len(model_pts) < 4:
         return None, None
     try:
-        _, rvec, tvec, _ = cv2.solvePnPRansac(np.array(model_pts), np.array(img_pts), 
-                                              CAMERA_MATRIX, DIST_COEFFS)
+        _, rvec, tvec, _ = cv2.solvePnPRansac(
+            np.array(model_pts, dtype=np.float32), 
+            np.array(img_pts, dtype=np.float32), 
+            CAMERA_MATRIX, DIST_COEFFS,
+            iterationsCount=500,
+            reprojectionError=8.0,
+            confidence=0.99
+        )
+        if rvec is None or tvec is None:
+            return None, None
+        # Refine with Levenberg-Marquardt
+        rvec, tvec = cv2.solvePnPRefineLM(np.array(model_pts, dtype=np.float32),
+                                          np.array(img_pts, dtype=np.float32),
+                                          CAMERA_MATRIX, DIST_COEFFS, rvec, tvec)
         return rvec, tvec
     except:
         return None, None
-
-
-def estimate_pose_single(corner_4x2, marker_size, mtx, distortion):
-    """Estimate pose for single marker using RANSAC (same as dodecahedron)."""
-    marker_size = marker_size*1000  # Convert to mm
-    marker_points = np.array([
-        [-marker_size / 2,  marker_size / 2, 0],
-        [ marker_size / 2,  marker_size / 2, 0],
-        [ marker_size / 2, -marker_size / 2, 0],
-        [-marker_size / 2, -marker_size / 2, 0]], dtype=np.float32)
-
-    try:
-        _, rvec, tvec, _ = cv2.solvePnPRansac(
-            marker_points,
-            corner_4x2.astype(np.float32),
-            mtx, distortion
-        )
-        return True, rvec, tvec
-    except:
-        return False, None, None
-
-
-def rvec_to_axis_angle_deg(rvec):
-    """Convert rotation vector to angle-axis representation in degrees."""
-    r = rvec.reshape(3).astype(float)
-    angle_rad = float(np.linalg.norm(r))
-
-    if angle_rad < 1e-12:
-        return 0.0, 0.0, 0.0, 0.0
-
-    angle_deg = angle_rad * 180.0 / np.pi
-    axis_deg = r * (180.0 / np.pi)
-    return float(angle_deg), float(axis_deg[0]), float(axis_deg[1]), float(axis_deg[2])
-
 
 def safe_point(p):
     """Convert point to int tuple safely."""
@@ -102,14 +85,60 @@ def safe_point(p):
         return None
 
 
-def apply_filter(filtered_val, new_val, alpha=0.3):
-    """Simple exponential moving average filter."""
+def apply_filter(filtered_val, new_val, alpha=0.3, max_delta=100):
+    """EMA filter with outlier rejection."""
+    new_val = np.array(new_val, dtype=float)
     if filtered_val is None:
-        return np.array(new_val, dtype=float)
-    return alpha * np.array(new_val, dtype=float) + (1 - alpha) * filtered_val
+        return new_val
+    
+    # Reject outliers: if delta > max_delta, keep previous value
+    delta = np.linalg.norm(new_val - filtered_val)
+    if delta > max_delta:
+        return filtered_val
+    
+    return alpha * new_val + (1 - alpha) * filtered_val
 
 
-def process_combined_phase(session_dir):
+def check_existing_files(session_dir):
+    """Check if output files already exist."""
+    tracked_combined = os.path.join(session_dir, 'tracked_combined.mp4')
+    data_dodeca = os.path.join(session_dir, 'data_dodeca.csv')
+    data_single = os.path.join(session_dir, 'data_single.csv')
+    
+    existing = []
+    if os.path.exists(tracked_combined):
+        existing.append('tracked_combined.mp4')
+    if os.path.exists(data_dodeca):
+        existing.append('data_dodeca.csv')
+    if os.path.exists(data_single):
+        existing.append('data_single.csv')
+    
+    return existing
+
+
+def prompt_overwrite(session_dir):
+    """Prompt user if existing files should be overwritten."""
+    existing = check_existing_files(session_dir)
+    if not existing:
+        return True
+    
+    print(f"\n[WARNING] Existing output files found:")
+    for f in existing:
+        print(f"    ├─ {f}")
+    
+    while True:
+        choice = input(f"\n[?] Overwrite? (y/n): ").strip().lower()
+        if choice in ['y', 'yes']:
+            print("[→] Overwriting existing files...")
+            return True
+        elif choice in ['n', 'no']:
+            print("[→] Skipping session")
+            return False
+        else:
+            print("[!] Invalid choice. Please enter 'y' or 'n'")
+
+
+def process_combined_phase(session_dir, allow_overwrite=True):
     """Combined Phase: Process both dodecahedron and single marker in one pass."""
     
     print(f"\n{'='*60}")
@@ -121,6 +150,11 @@ def process_combined_phase(session_dir):
     video_path = os.path.join(session_dir, 'raw_camera.mp4')
     if not os.path.exists(video_path):
         print(f"Error: {video_path} not found")
+        return False
+    
+    # Check for existing files and skip if overwrite not allowed
+    if not allow_overwrite and check_existing_files(session_dir):
+        print("[→] Skipping (existing files found, use --overwrite to reprocess)")
         return False
     
     # Load dodecahedron marker points
@@ -179,9 +213,6 @@ def process_combined_phase(session_dir):
     single_pen_tip_path = []
     single_trajectory_canvas = None
     
-    # Single marker setup
-    MARKER_ID_TARGET = 15
-    SINGLE_MARKER_SIZE_MM = 0.017 * 1000
     single_marker_points = np.array([
         [-SINGLE_MARKER_SIZE_MM/2,  SINGLE_MARKER_SIZE_MM/2, 0],
         [ SINGLE_MARKER_SIZE_MM/2,  SINGLE_MARKER_SIZE_MM/2, 0],
@@ -238,7 +269,7 @@ def process_combined_phase(session_dir):
                     if dodeca_pen_tip_2d_filter is None:
                         dodeca_pen_tip_2d_filter = pen_tip_2d[0][0]
                     else:
-                        dodeca_pen_tip_2d_filter = apply_filter(dodeca_pen_tip_2d_filter, pen_tip_2d[0][0], 0.4)
+                        dodeca_pen_tip_2d_filter = apply_filter(dodeca_pen_tip_2d_filter, pen_tip_2d[0][0], 0.5, max_delta=50)
                     
                     pen_pt = safe_point(dodeca_pen_tip_2d_filter)
                     if pen_pt:
@@ -256,7 +287,7 @@ def process_combined_phase(session_dir):
                     if dodeca_pen_tip_3d_filter is None:
                         dodeca_pen_tip_3d_filter = pen_tip_3d_global.flatten()
                     else:
-                        dodeca_pen_tip_3d_filter = apply_filter(dodeca_pen_tip_3d_filter, pen_tip_3d_global.flatten(), 0.3)
+                        dodeca_pen_tip_3d_filter = apply_filter(dodeca_pen_tip_3d_filter, pen_tip_3d_global.flatten(), 0.4, max_delta=200)
                     
                     if dodeca_initial_tip is None:
                         dodeca_initial_tip = dodeca_pen_tip_3d_filter.copy()
@@ -264,7 +295,7 @@ def process_combined_phase(session_dir):
                     
                     dodeca_frame_count += 1
                     tip_rel = dodeca_pen_tip_3d_filter - dodeca_initial_tip
-                    marker_rel = tvec.flatten() - dodeca_initial_marker
+                    marker_rel = tvec.flatten() #- dodeca_initial_marker
                     angle = np.linalg.norm(rvec)
                     axis = rvec.flatten() / angle * np.degrees(angle) if angle > 1e-6 else np.zeros(3)
                     
@@ -299,6 +330,16 @@ def process_combined_phase(session_dir):
                         cv2.SOLVEPNP_IPPE_SQUARE
                     )
                     
+                    if success and rvec is not None and tvec is not None:
+                        # Refine with iterative method
+                        rvec, tvec = cv2.solvePnPRefineLM(
+                            single_marker_points,
+                            corner,
+                            CAMERA_MATRIX,
+                            DIST_COEFFS,
+                            rvec, tvec
+                        )
+                    
                     if success and rvec is not None and tvec is not None and not (np.isnan(rvec).any() or np.isnan(tvec).any()):
                         single_detected = True
                         
@@ -316,7 +357,7 @@ def process_combined_phase(session_dir):
                         if single_pen_tip_3d_filter is None:
                             single_pen_tip_3d_filter = pen_tip_3d_global
                         else:
-                            single_pen_tip_3d_filter = apply_filter(single_pen_tip_3d_filter, pen_tip_3d_global, 0.3)
+                            single_pen_tip_3d_filter = apply_filter(single_pen_tip_3d_filter, pen_tip_3d_global, 0.4, max_delta=200)
                         
                         pen_tip_2d, _ = cv2.projectPoints(
                             single_pen_tip_3d_filter.reshape(1, 1, 3).astype(np.float32),
@@ -328,7 +369,7 @@ def process_combined_phase(session_dir):
                         if single_pen_tip_2d_filter is None:
                             single_pen_tip_2d_filter = pen_tip_2d[0][0]
                         else:
-                            single_pen_tip_2d_filter = apply_filter(single_pen_tip_2d_filter, pen_tip_2d[0][0], 0.4)
+                            single_pen_tip_2d_filter = apply_filter(single_pen_tip_2d_filter, pen_tip_2d[0][0], 0.5, max_delta=50)
                         
                         pen_pt = safe_point(single_pen_tip_2d_filter)
                         if pen_pt:
@@ -347,9 +388,9 @@ def process_combined_phase(session_dir):
                         
                         single_frame_count += 1
                         tip_rel = single_pen_tip_3d_filter - single_initial_tip
-                        marker_rel = tvec.flatten() - single_initial_marker
+                        marker_rel = tvec.flatten() #- single_initial_marker
                         angle = np.linalg.norm(rvec)
-                        axis = rvec.flatten() / angle * np.degrees(angle) if angle > 1e-6 else np.zeros(3)
+                        axis = abs(rvec.flatten() / angle * np.degrees(angle) if angle > 1e-6 else np.zeros(3) )
                         
                         single_data = {
                             'marker_id': marker_id,
@@ -471,9 +512,17 @@ def main():
     parser = argparse.ArgumentParser(description='Post-process video with two-phase marker tracking (Dodeca then Single)')
     parser.add_argument('-s', '--session', type=str, help='Session directory to process')
     parser.add_argument('-l', '--latest', action='store_true', help='Process latest session')
-    parser.add_argument('-a', '--all', action='store_true', help='Process all pending sessions')
+    parser.add_argument('-a', '--all', default=True, action='store_true', help='Process all pending sessions')
+    parser.add_argument('--overwrite', action='store_true', help='Overwrite existing output files without prompting')
+    parser.add_argument('--no-overwrite', action='store_true', help='Skip sessions with existing output files')
+    parser.add_argument('-i', '--interactive', action='store_true', help='Prompt for overwrite on each session')
     
     args = parser.parse_args()
+    
+    # Determine overwrite behavior
+    allow_overwrite = not args.no_overwrite  # Default is True (allow overwrite)
+    if args.overwrite:
+        allow_overwrite = True
     
     def process_session_full(session_path):
         """Process session with combined tracking: dodeca + single in one video."""
@@ -481,8 +530,13 @@ def main():
         print(f"# COMBINED PROCESSING: {os.path.basename(session_path)}")
         print(f"{'#'*60}")
         
+        # Check for existing files and prompt if interactive mode
+        if args.interactive:
+            if not prompt_overwrite(session_path):
+                return False
+        
         # Combined phase: dodeca + single in one pass
-        success = process_combined_phase(session_path)
+        success = process_combined_phase(session_path, allow_overwrite=allow_overwrite)
         if not success:
             print("[ERROR] Combined phase failed!")
             return False
@@ -494,7 +548,7 @@ def main():
     
     if args.all:
         # Process all sessions
-        base_dir = 'dataMarker/for_calib'
+        base_dir = 'dataMarker'
         if not os.path.exists(base_dir):
             print("Error: dataMarker directory not found")
             return
@@ -504,23 +558,32 @@ def main():
             print("Error: No sessions found")
             return
         
-        # Filter sessions that don't have the combined output yet
+        # Filter sessions based on overwrite settings
         pending_sessions = []
         for session in sessions:
             session_path = os.path.join(base_dir, session)
             tracked_combined = os.path.join(session_path, 'tracked_combined.mp4')
             raw_path = os.path.join(session_path, 'raw_camera.mp4')
             
-            if os.path.exists(raw_path) and not os.path.exists(tracked_combined):
-                pending_sessions.append(session_path)
+            has_output = os.path.exists(tracked_combined)
+            has_input = os.path.exists(raw_path)
+            
+            if has_input:
+                if allow_overwrite or not has_output:
+                    pending_sessions.append(session_path)
         
         if not pending_sessions:
-            print("All sessions already processed!")
+            if allow_overwrite:
+                print("No sessions found with raw_camera.mp4!")
+            else:
+                print("All sessions already processed! (use --overwrite to reprocess)")
             return
         
         print(f"\n{'='*60}")
-        print(f"BATCH PROCESSING: {len(pending_sessions)} pending sessions")
+        print(f"BATCH PROCESSING: {len(pending_sessions)} sessions")
         print(f"Mode: COMBINED (Dodeca + Single in one video)")
+        print(f"Overwrite: {'ON' if allow_overwrite else 'OFF'}")
+        print(f"Interactive: {'ON' if args.interactive else 'OFF'}")
         print(f"{'='*60}")
         
         for i, session_path in enumerate(pending_sessions, 1):

@@ -36,11 +36,12 @@ DODECA_PEN_TIP_LOC = np.array([[3.950217091], [-122.019756294], [143.423864236]]
 
 # Single marker pen tip offset (meter)
 #SINGLE_TIP_OFFSET_MARKER = np.array([[-45.352322], [0], [-137.492666]], dtype=np.float32) # id 22
-#SINGLE_TIP_OFFSET_MARKER = np.array([[-79.004558], [50.944913], [-163.322381]], dtype=np.float32) # id 10
+#SINGLE_TIP_OFFSET_MARKER = np.array([[-79.004558], [50.944913], [-163.322381]], dtype=np.float32) # id 10 in dodeca
+SINGLE_TIP_OFFSET_MARKER = np.array([[-87.131959], [61.051814], [-178.083995]], dtype=np.float32) # id 10 in dodeca 2
 #SINGLE_TIP_OFFSET_MARKER = np.array([[2.610715], [-55.398142], [-156.996888]], dtype=np.float32) # id 15
-SINGLE_TIP_OFFSET_MARKER = np.array([[ 0], [0], [ -180]], dtype=np.float32)
+#SINGLE_TIP_OFFSET_MARKER = np.array([[ 0], [0], [ -180]], dtype=np.float32)
 # Single marker setup
-MARKER_ID_TARGET = 15
+MARKER_ID_TARGET = 10
 SINGLE_MARKER_SIZE_MM = 0.016 * 1000
 
 
@@ -548,7 +549,7 @@ def main():
     
     if args.all:
         # Process all sessions
-        base_dir = 'dataMarker'
+        base_dir = r'dataMarker\2ndExp\10mm2'
         if not os.path.exists(base_dir):
             print("Error: dataMarker directory not found")
             return

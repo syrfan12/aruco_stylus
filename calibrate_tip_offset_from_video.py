@@ -3,6 +3,8 @@ Calibration Program: Find Pen Tip Offset from Video Recording
 - Detects markers in video frames
 - Calculates transformation between marker pose and pen tip position
 - Estimates optimal tip offset using multiple reference points
+
+python calibrate_tip_offset_from_video.py raw_camera.mp4 -m 15 -s 16
 """
 
 import cv2
